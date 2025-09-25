@@ -1,3 +1,24 @@
+import subprocess
+import sys
+
+# Function to check and install the module if needed
+def install_module(module_name):
+    try:
+        __import__(module_name)
+    except ImportError:
+        print(f"{module_name} not found. Installing...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", module_name])
+
+if not getattr(sys, 'frozen', False):   # Only install if not running as a bundled executable
+    try:
+        modules = ['tkinterdnd2', 'PyPDF2']
+
+        for module in modules:
+            install_module(module)
+    except Exception as e:
+        print(f"Error installing modules: {e}")
+        sys.exit(1)
+
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -134,3 +155,4 @@ if __name__ == "__main__":
     
     app = PDFMergerApp()
     app.mainloop()
+
