@@ -64,8 +64,30 @@ class PDFMergerApp(TkinterDnD.Tk):
         tk.Checkbutton(
             options_frame,
             text="Print as picture (flatten pages to images before merging)",
-            variable=self.print_as_picture_var
-        ).grid(row=0, column=0, padx=5, sticky="w")
+            variable=self.print_as_picture_var,
+            command=self._update_quality_state
+        ).grid(row=0, column=0, columnspan=2, padx=5, sticky="w")
+
+        self.quality_label = tk.Label(options_frame, text="Image quality:")
+        self.quality_label.grid(row=1, column=0, padx=(5, 2), pady=(4, 0), sticky="e")
+        self.picture_quality_var = tk.StringVar(value="Medium (150 DPI)")
+        self.quality_menu = tk.OptionMenu(
+            options_frame,
+            self.picture_quality_var,
+            "Low (100 DPI, smallest file)",
+            "Medium (150 DPI)",
+            "High (200 DPI)",
+            "Very high (300 DPI, largest file)",
+        )
+        self.quality_menu.grid(row=1, column=1, pady=(4, 0), sticky="w")
+
+        self._update_quality_state()
+
+    def _update_quality_state(self):
+        """Enable the Image quality dropdown only when Print as picture is ticked."""
+        state = tk.NORMAL if self.print_as_picture_var.get() else tk.DISABLED
+        self.quality_label.config(state=state)
+        self.quality_menu.config(state=state)
 
     # ----------------------------
     # Drag & drop handling
@@ -163,7 +185,17 @@ class PDFMergerApp(TkinterDnD.Tk):
         merger.write(save_path)
         merger.close()
 
-    def _merge_as_pictures(self, save_path, dpi=200):
+    # DPI / JPEG quality behind each "Image quality" menu choice. JPEG at a
+    # moderate quality is used instead of PNG because it is dramatically
+    # smaller for scanned/rendered pages, with little visible difference.
+    _QUALITY_PRESETS = {
+        "Low (100 DPI, smallest file)": (100, 60),
+        "Medium (150 DPI)": (150, 75),
+        "High (200 DPI)": (200, 85),
+        "Very high (300 DPI, largest file)": (300, 90),
+    }
+
+    def _merge_as_pictures(self, save_path):
         """
         "Print as picture" merge: renders every page of every input PDF to an
         image first (like printing to an image and back to PDF), then places
@@ -171,7 +203,12 @@ class PDFMergerApp(TkinterDnD.Tk):
         annotations, and layers into a single picture per page - useful when
         a source PDF is malformed, has fonts that render oddly, or you simply
         want a flattened, non-editable copy.
+
+        Pages are encoded as JPEG (not PNG) and rendered at the DPI chosen in
+        the "Image quality" dropdown, since that is what actually controls
+        the resulting file size.
         """
+        dpi, jpg_quality = self._QUALITY_PRESETS[self.picture_quality_var.get()]
         zoom = dpi / 72  # PDF points are 72 per inch
         mat = fitz.Matrix(zoom, zoom)
 
@@ -182,13 +219,15 @@ class PDFMergerApp(TkinterDnD.Tk):
                 src = fitz.open(path)
                 try:
                     for page in src:
-                        pix = page.get_pixmap(matrix=mat)
-                        img_bytes = pix.tobytes("png")
+                        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB, alpha=False)
+                        img_bytes = pix.tobytes("jpg", jpg_quality=jpg_quality)
                         new_page = out_doc.new_page(width=page.rect.width, height=page.rect.height)
                         new_page.insert_image(new_page.rect, stream=img_bytes)
                 finally:
                     src.close()
-            out_doc.save(save_path)
+            # deflate/garbage-collect the output so page objects and any
+            # duplicate resources are compressed as tightly as possible
+            out_doc.save(save_path, garbage=4, deflate=True)
         finally:
             out_doc.close()
 
