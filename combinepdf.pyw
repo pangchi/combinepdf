@@ -2,19 +2,23 @@ import subprocess
 import sys
 
 # Function to check and install the module if needed
-def install_module(module_name):
+def install_module(import_name, pip_name=None):
+    pip_name = pip_name or import_name
     try:
-        __import__(module_name)
+        __import__(import_name)
     except ImportError:
-        print(f"{module_name} not found. Installing...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", module_name])
+        print(f"{pip_name} not found. Installing...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
 
-if not getattr(sys, 'frozen', False):   # Only install if not running as a bundled executable
+if not getattr(sys, 'frozen', False):  # Only install if not running as a bundled executable
     try:
-        modules = ['tkinterdnd2', 'PyPDF2']
-
-        for module in modules:
-            install_module(module)
+        modules = [
+            ('tkinterdnd2', 'tkinterdnd2'),
+            ('PyPDF2', 'PyPDF2'),
+            ('fitz', 'PyMuPDF'),  # import name is "fitz", pip package is "PyMuPDF"
+        ]
+        for import_name, pip_name in modules:
+            install_module(import_name, pip_name)
     except Exception as e:
         print(f"Error installing modules: {e}")
         sys.exit(1)
@@ -23,6 +27,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from PyPDF2 import PdfMerger
+import fitz  # PyMuPDF, used for the "Print as picture" (rasterize) option
 import os as os
 from urllib.parse import urlparse, unquote
 from urllib.request import url2pathname
@@ -32,7 +37,7 @@ class PDFMergerApp(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
         self.title("PDF Merger")
-        self.geometry("500x400")
+        self.geometry("500x430")
 
         # Listbox for files
         self.file_listbox = tk.Listbox(self, selectmode=tk.SINGLE, width=60, height=15)
@@ -50,6 +55,17 @@ class PDFMergerApp(TkinterDnD.Tk):
         tk.Button(btn_frame, text="Move Down", command=self.move_down).grid(row=0, column=1, padx=5)
         tk.Button(btn_frame, text="Remove", command=self.remove_file).grid(row=0, column=2, padx=5)
         tk.Button(btn_frame, text="Merge PDFs", command=self.merge_pdfs).grid(row=0, column=3, padx=5)
+
+        # Options
+        options_frame = tk.Frame(self)
+        options_frame.pack(pady=5)
+
+        self.print_as_picture_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            options_frame,
+            text="Print as picture (flatten pages to images before merging)",
+            variable=self.print_as_picture_var
+        ).grid(row=0, column=0, padx=5, sticky="w")
 
     # ----------------------------
     # Drag & drop handling
@@ -125,26 +141,60 @@ class PDFMergerApp(TkinterDnD.Tk):
             return
 
         save_path = filedialog.asksaveasfilename(defaultextension=".pdf",
-                                                 filetypes=[("PDF files", "*.pdf")],
-                                                 title="Save merged PDF as")
+                                                   filetypes=[("PDF files", "*.pdf")],
+                                                   title="Save merged PDF as")
         if not save_path:
             return
 
-        merger = PdfMerger()
-        for i in range(self.file_listbox.size()):
-            merger.append(self.file_listbox.get(i))
-
         try:
-            merger.write(save_path)
-            merger.close()
+            if self.print_as_picture_var.get():
+                self._merge_as_pictures(save_path)
+            else:
+                self._merge_normal(save_path)
             messagebox.showinfo("Success", f"Merged PDF saved at:\n{save_path}")
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
+    def _merge_normal(self, save_path):
+        """Standard merge: keeps each PDF's pages as-is (vector text, layers, etc.)."""
+        merger = PdfMerger()
+        for i in range(self.file_listbox.size()):
+            merger.append(self.file_listbox.get(i))
+        merger.write(save_path)
+        merger.close()
+
+    def _merge_as_pictures(self, save_path, dpi=200):
+        """
+        "Print as picture" merge: renders every page of every input PDF to an
+        image first (like printing to an image and back to PDF), then places
+        that image on a same-size output page. This flattens text, forms,
+        annotations, and layers into a single picture per page - useful when
+        a source PDF is malformed, has fonts that render oddly, or you simply
+        want a flattened, non-editable copy.
+        """
+        zoom = dpi / 72  # PDF points are 72 per inch
+        mat = fitz.Matrix(zoom, zoom)
+
+        out_doc = fitz.open()
+        try:
+            for i in range(self.file_listbox.size()):
+                path = self.file_listbox.get(i)
+                src = fitz.open(path)
+                try:
+                    for page in src:
+                        pix = page.get_pixmap(matrix=mat)
+                        img_bytes = pix.tobytes("png")
+                        new_page = out_doc.new_page(width=page.rect.width, height=page.rect.height)
+                        new_page.insert_image(new_page.rect, stream=img_bytes)
+                finally:
+                    src.close()
+            out_doc.save(save_path)
+        finally:
+            out_doc.close()
+
 
 if __name__ == "__main__":
     import sys
-    
     if getattr(sys, 'frozen', False):  # Check if running as a bundled executable
         try:
             import pyi_splash
@@ -152,7 +202,6 @@ if __name__ == "__main__":
         except ImportError:
             # pyi_splash might not be available if not running through PyInstaller
             pass
-    
+
     app = PDFMergerApp()
     app.mainloop()
-
