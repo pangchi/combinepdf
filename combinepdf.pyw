@@ -1,34 +1,95 @@
+import importlib
+import os
+import site
 import subprocess
 import sys
+
+
+def _python_exe():
+    """
+    Return an interpreter suitable for running pip. A .pyw normally runs under
+    pythonw.exe, which has no console / valid std handles and can make the pip
+    subprocess fail silently, so prefer the sibling python.exe on Windows.
+    """
+    exe = sys.executable
+    if os.name == "nt" and exe.lower().endswith("pythonw.exe"):
+        candidate = exe[:-len("pythonw.exe")] + "python.exe"
+        if os.path.exists(candidate):
+            return candidate
+    return exe
+
+
+def _run_pip(args):
+    kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT, text=True)
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # no console flash
+    return subprocess.run([_python_exe(), "-m", "pip", "install"] + args, **kwargs)
+
+
+def _refresh_import_paths():
+    """Make freshly installed packages importable without restarting."""
+    importlib.invalidate_caches()
+    try:
+        user_site = site.getusersitepackages()
+        if os.path.isdir(user_site) and user_site not in sys.path:
+            sys.path.append(user_site)
+    except Exception:
+        pass
+
 
 # Function to check and install the module if needed
 def install_module(import_name, pip_name=None):
     pip_name = pip_name or import_name
     try:
-        __import__(import_name)
+        importlib.import_module(import_name)
+        return
     except ImportError:
-        print(f"{pip_name} not found. Installing...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
+        pass
+
+    result = _run_pip([pip_name])
+    if result.returncode != 0:
+        # Fall back to a per-user install (e.g. no write access to site-packages)
+        result = _run_pip(["--user", pip_name])
+    if result.returncode != 0:
+        raise RuntimeError(f"pip could not install {pip_name}:\n{result.stdout[-1500:]}")
+
+    _refresh_import_paths()
+    importlib.import_module(import_name)  # raises ImportError if still not found
+
+
+def _fatal(message):
+    """Show an error dialog (pythonw has no console, so print() is invisible)."""
+    try:
+        import tkinter as _tk
+        from tkinter import messagebox as _mb
+        root = _tk.Tk()
+        root.withdraw()
+        _mb.showerror("PDF Merger - setup failed", message)
+        root.destroy()
+    except Exception:
+        print(message)
+    sys.exit(1)
+
 
 if not getattr(sys, 'frozen', False):  # Only install if not running as a bundled executable
-    try:
-        modules = [
-            ('tkinterdnd2', 'tkinterdnd2'),
-            ('PyPDF2', 'PyPDF2'),
-            ('fitz', 'PyMuPDF'),  # import name is "fitz", pip package is "PyMuPDF"
-        ]
-        for import_name, pip_name in modules:
+    modules = [
+        ('tkinterdnd2', 'tkinterdnd2'),
+        ('PyPDF2', 'PyPDF2'),
+        ('fitz', 'PyMuPDF'),  # import name is "fitz", pip package is "PyMuPDF"
+    ]
+    for import_name, pip_name in modules:
+        try:
             install_module(import_name, pip_name)
-    except Exception as e:
-        print(f"Error installing modules: {e}")
-        sys.exit(1)
+        except Exception as e:
+            _fatal(f"Could not install required package '{pip_name}'.\n\n{e}\n\n"
+                   f"Try running:  python -m pip install {pip_name}")
 
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from PyPDF2 import PdfMerger
 import fitz  # PyMuPDF, used for the "Print as picture" (rasterize) option
-import os as os
 from urllib.parse import urlparse, unquote
 from urllib.request import url2pathname
 
@@ -233,7 +294,6 @@ class PDFMergerApp(TkinterDnD.Tk):
 
 
 if __name__ == "__main__":
-    import sys
     if getattr(sys, 'frozen', False):  # Check if running as a bundled executable
         try:
             import pyi_splash
