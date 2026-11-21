@@ -39,13 +39,17 @@ def _refresh_import_paths():
 
 
 # Function to check and install the module if needed
-def install_module(import_name, pip_name=None):
-    pip_name = pip_name or import_name
-    try:
-        importlib.import_module(import_name)
-        return
-    except ImportError:
-        pass
+def install_module(import_names, pip_name=None):
+    """import_names: a module name, or a tuple of alternative names tried in order."""
+    if isinstance(import_names, str):
+        import_names = (import_names,)
+    pip_name = pip_name or import_names[0]
+    for name in import_names:
+        try:
+            importlib.import_module(name)
+            return
+        except ImportError:
+            pass
 
     result = _run_pip([pip_name])
     if result.returncode != 0:
@@ -55,7 +59,13 @@ def install_module(import_name, pip_name=None):
         raise RuntimeError(f"pip could not install {pip_name}:\n{result.stdout[-1500:]}")
 
     _refresh_import_paths()
-    importlib.import_module(import_name)  # raises ImportError if still not found
+    for name in import_names:  # raises ImportError if none can be imported even now
+        try:
+            importlib.import_module(name)
+            return
+        except ImportError:
+            last_error = sys.exc_info()[1]
+    raise last_error
 
 
 def _fatal(message):
@@ -76,7 +86,8 @@ if not getattr(sys, 'frozen', False):  # Only install if not running as a bundle
     modules = [
         ('tkinterdnd2', 'tkinterdnd2'),
         ('PyPDF2', 'PyPDF2'),
-        ('fitz', 'PyMuPDF'),  # import name is "fitz", pip package is "PyMuPDF"
+        # pip package "PyMuPDF" imports as "pymupdf" (new) or "fitz" (older, now deprecated)
+        (('pymupdf', 'fitz'), 'PyMuPDF'),
     ]
     for import_name, pip_name in modules:
         try:
